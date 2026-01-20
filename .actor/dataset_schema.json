@@ -1,0 +1,72 @@
+{
+    "actorSpecification": 1,
+    "fields": {},
+    "views": {
+        "youtube_videos": {
+            "title": "YouTube Videos",
+            "transformation": {
+                "fields": ["video_url", "title", "creators", "duration", "likes", "summary"]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "video_url": {
+                        "label": "Video URL",
+                        "format": "link"
+                    },
+                    "title": {
+                        "label": "Title",
+                        "format": "text"
+                    },
+                    "creators": {
+                        "label": "Creator",
+                        "format": "text"
+                    },
+                    "duration": {
+                        "label": "Duration",
+                        "format": "text"
+                    },
+                    "likes": {
+                        "label": "Likes",
+                        "format": "text"
+                    },
+                    "summary": {
+                        "label": "Summary",
+                        "format": "text"
+                    }
+                }
+            }
+        },
+        "overview": {
+            "title": "Overview",
+            "transformation": {
+                "fields": ["title", "url", "h1s", "h2s", "h3s"]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "title": {
+                        "label": "Title",
+                        "format": "text"
+                    },
+                    "url": {
+                        "label": "URL",
+                        "format": "link"
+                    },
+                    "h1s": {
+                        "label": "H1s",
+                        "format": "array"
+                    },
+                    "h2s": {
+                        "label": "H2s",
+                        "format": "array"
+                    },
+                    "h3s": {
+                        "label": "H3s",
+                        "format": "array"
+                    }
+                }
+            }
+        }
+    }
+}

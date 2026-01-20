@@ -1,0 +1,18 @@
+{
+    "actorSpecification": 1,
+    "name": "youtube-summary",
+    "title": "YouTube Video Summary Scraper",
+    "description": "Extracts video information from YouTube including title, duration, likes, creators, and summary.",
+    "version": "0.0",
+    "buildTag": "latest",
+    "meta": {
+        "templateId": "python-crawlee-playwright",
+        "generatedBy": "<FILL-IN-MODEL>"
+    },
+    "input": "./input_schema.json",
+    "output": "./output_schema.json",
+    "storages": {
+        "dataset": "./dataset_schema.json"
+    },
+    "dockerfile": "../Dockerfile"
+}
