@@ -11,10 +11,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import os
+
 from apify import Actor
+from crawlee import Request
 from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
-from crawlee.requests import Request
-from playwright.async_api import Page
+from playwright.async_api import Page, Browser, BrowserContext
 
 
 async def extract_youtube_video_urls(page: Page, max_videos: int = 30) -> list[str]:
@@ -270,6 +272,85 @@ async def get_youtube_video_info(page: Page) -> dict[str, Any]:
     return video_info
 
 
+async def login_to_youtube(page: Page, email: str, password: str) -> bool:
+    """Login to YouTube with provided credentials.
+    
+    Args:
+        page: Playwright page object
+        email: YouTube account email
+        password: YouTube account password
+        
+    Returns:
+        True if login successful, False otherwise
+    """
+    try:
+        Actor.log.info('Starting YouTube login process...')
+        
+        # Navigate to YouTube
+        await page.goto('https://www.youtube.com', wait_until='networkidle')
+        await page.wait_for_timeout(2000)
+        
+        # Check if already logged in
+        sign_in_button = page.locator('text=Sign in').first
+        if await sign_in_button.count() == 0:
+            Actor.log.info('Already logged in to YouTube')
+            return True
+        
+        # Click Sign in button
+        Actor.log.info('Clicking Sign in button...')
+        await sign_in_button.click()
+        await page.wait_for_timeout(2000)
+        
+        # Wait for email input and enter email
+        Actor.log.info('Entering email...')
+        email_input = page.locator('input[type="email"]').first
+        await email_input.wait_for(state='visible', timeout=10000)
+        await email_input.fill(email)
+        await page.wait_for_timeout(1000)
+        
+        # Click Next button
+        next_button = page.locator('button:has-text("Next")').first
+        if await next_button.count() > 0:
+            await next_button.click()
+            await page.wait_for_timeout(3000)
+        
+        # Wait for password input and enter password
+        Actor.log.info('Entering password...')
+        password_input = page.locator('input[type="password"]').first
+        await password_input.wait_for(state='visible', timeout=10000)
+        await password_input.fill(password)
+        await page.wait_for_timeout(1000)
+        
+        # Click Next/Sign in button
+        sign_in_button_final = page.locator('button:has-text("Next"), button:has-text("Sign in")').first
+        if await sign_in_button_final.count() > 0:
+            await sign_in_button_final.click()
+            await page.wait_for_timeout(5000)
+        
+        # Wait for navigation to complete and check if login was successful
+        await page.wait_for_load_state('networkidle', timeout=15000)
+        await page.wait_for_timeout(3000)
+        
+        # Check if we're logged in by looking for user avatar or account button
+        user_avatar = page.locator('button#avatar-btn, ytd-topbar-menu-button-renderer').first
+        if await user_avatar.count() > 0:
+            Actor.log.info('Successfully logged in to YouTube')
+            return True
+        else:
+            # Check for error messages
+            error_message = page.locator('text=/wrong password|incorrect|error/i').first
+            if await error_message.count() > 0:
+                error_text = await error_message.text_content()
+                Actor.log.error(f'Login failed: {error_text}')
+            else:
+                Actor.log.warning('Login status unclear - may need manual verification')
+            return False
+            
+    except Exception as e:
+        Actor.log.error(f'Error during YouTube login: {e}')
+        return False
+
+
 async def main() -> None:
     """Define a main entry point for the Apify Actor.
 
@@ -295,9 +376,19 @@ async def main() -> None:
             await Actor.exit()
 
         # Get max videos to scrape (default 30)
-        max_videos = actor_input.get('max_videos', 30)
+        max_videos = int(actor_input.get('max_videos', 30))
         
-        # Create a crawler.
+        # Get login credentials from environment variables (preferred) or input
+        # Environment variables are more secure, especially for secrets
+        email = os.getenv('YOUTUBE_EMAIL', '') or actor_input.get('youtube_email', '')
+        password = os.getenv('YOUTUBE_PASSWORD', '') or actor_input.get('youtube_password', '')
+        
+        if email and password:
+            Actor.log.info('YouTube credentials found (from environment variables or input)')
+        elif email or password:
+            Actor.log.warning('Incomplete credentials: email or password missing')
+        
+        # Create a crawler
         crawler = PlaywrightCrawler(
             # Allow enough requests for initial page + 30 videos
             max_requests_per_crawl=max_videos + 1,
@@ -313,8 +404,23 @@ async def main() -> None:
             url = context.request.url
             Actor.log.info(f'Scraping {url}...')
             
-            # Get current scraped count
-            scraped_videos_count = await Actor.get_value('scraped_videos_count') or 0
+            # Check if we need to login (only once, on first YouTube page)
+            login_performed = await Actor.get_value('login_performed') or False
+            if email and password and not login_performed and 'youtube.com' in url:
+                Actor.log.info('Performing login on first YouTube page...')
+                login_success = await login_to_youtube(context.page, email, password)
+                if login_success:
+                    await Actor.set_value('login_performed', True)
+                    Actor.log.info('Login successful')
+                else:
+                    Actor.log.warning('Login may have failed, continuing anyway...')
+            
+            # Get current scraped count (ensure it's an integer)
+            scraped_videos_count = await Actor.get_value('scraped_videos_count')
+            if scraped_videos_count is None:
+                scraped_videos_count = 0
+            else:
+                scraped_videos_count = int(scraped_videos_count)
 
             # Check if this is a YouTube video URL
             if 'youtube.com/watch' in url or 'youtu.be/' in url:
@@ -359,8 +465,9 @@ async def main() -> None:
                 }
                 await context.push_data(data)
 
-        # Reset scraped count at start
+        # Reset scraped count and login flag at start
         await Actor.set_value('scraped_videos_count', 0)
+        await Actor.set_value('login_performed', False)
         
         # Run the crawler with the starting requests.
         await crawler.run(start_urls)

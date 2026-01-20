@@ -18,6 +18,20 @@
             "default": 30,
             "minimum": 1,
             "maximum": 1000
+        },
+        "youtube_email": {
+            "title": "YouTube Email",
+            "type": "string",
+            "description": "YouTube account email for login (optional, can also use YOUTUBE_EMAIL environment variable)",
+            "default": "547908415@qq.com",
+            "editor": "textfield"
+        },
+        "youtube_password": {
+            "title": "YouTube Password",
+            "type": "string",
+            "description": "YouTube account password for login (optional, can also use YOUTUBE_PASSWORD environment variable)",
+            "editor": "textfield",
+            "isSecret": true
         }
     },
     "required": ["start_urls"]

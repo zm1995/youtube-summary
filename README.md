@@ -34,6 +34,32 @@ For complete information [see this article](https://docs.apify.com/platform/acto
 1. Build the Actor
 2. Run the Actor
 
+## Environment Variables and Secrets
+
+This Actor supports YouTube login via credentials. You can provide credentials in two ways:
+
+1. **Via Input Schema**: Enter `youtube_email` and `youtube_password` in the Actor input
+2. **Via Environment Variables**: Set the following environment variables:
+   - `YOUTUBE_EMAIL`: Your YouTube account email
+   - `YOUTUBE_PASSWORD`: Your YouTube account password (secret)
+
+### Setting Secrets in Apify Console
+
+To set `YOUTUBE_PASSWORD` as a secret environment variable:
+
+1. Go to your Actor in the Apify Console
+2. Navigate to **Settings** → **Environment variables**
+3. Click **Add environment variable**
+4. Set:
+   - **Name**: `YOUTUBE_PASSWORD`
+   - **Value**: Your YouTube password
+   - **Secret**: ✅ Enable this checkbox to mark it as a secret
+5. Click **Save**
+
+The Actor will automatically use the environment variable if it's set, otherwise it will use the input values.
+
+**Note**: Secrets are encrypted and never exposed in logs or output.
+
 ## Pull the Actor for local development
 
 If you would like to develop locally, you can pull the existing Actor from Apify console using Apify CLI:
