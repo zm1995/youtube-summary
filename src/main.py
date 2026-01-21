@@ -165,7 +165,7 @@ async def main() -> None:
             Actor.log.info(f"Navigating to {url} using Playwright...")
 
             # Navigate to the URL using Playwright page (can execute JavaScript)
-            await context.page.goto(url, wait_until="networkidle", timeout=60000)
+            await context.page.goto(url, wait_until="load", timeout=60000)
 
             # Wait for page to fully load and JavaScript to render content
             Actor.log.info("Waiting for page content to load...")
@@ -297,31 +297,13 @@ async def main() -> None:
                     # Navigate to video page with optimized loading
                     Actor.log.info(f"Visiting video: {link}")
 
-                    # Try different wait strategies
-                    wait_strategies = [
-                        ("networkidle", 120000),  # 120 seconds for network idle
-                        ("load", 90000),  # 90 seconds for full page load
-                    ]
+                    # Load page with 'commit' strategy for faster loading
+                    # 'commit' waits for navigation to commit, which is faster than 'load'
+                    await context.page.goto(link, wait_until="commit", timeout=120000)
+                    Actor.log.info("Page navigation committed")
 
-                    page_loaded = False
-                    for wait_until, timeout in wait_strategies:
-                        try:
-                            await context.page.goto(
-                                link, wait_until=wait_until, timeout=timeout
-                            )
-                            Actor.log.info(
-                                f"Page loaded successfully with '{wait_until}' strategy"
-                            )
-                            page_loaded = True
-                            break
-                        except Exception as e:
-                            Actor.log.debug(f"Failed with '{wait_until}' strategy: {e}")
-                            if wait_until == wait_strategies[-1][0]:
-                                # Last strategy failed
-                                Actor.log.error(
-                                    f"Failed to load page with all strategies: {link}"
-                                )
-                                raise
+                    # Wait a bit for initial content to render
+                    await context.page.wait_for_timeout(2000)
 
                     # Check for YouTube restrictions (age verification, region block, etc.)
                     try:
