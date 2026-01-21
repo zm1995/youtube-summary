@@ -19,7 +19,7 @@ import requests
 from apify import Actor
 from crawlee import Request
 from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
-from playwright.async_api import Page, Browser, BrowserContext
+from playwright.async_api import Page, Browser, BrowserContext, Error as PlaywrightError
 from bs4 import BeautifulSoup
 
 
@@ -139,6 +139,81 @@ async def main() -> None:
         # Define a request handler, which will be called for every request.
         @crawler.router.default_handler
         async def request_handler(context: PlaywrightCrawlingContext) -> None:
+            # Check if this is a detail page request
+            user_data = context.request.user_data or {}
+            label = user_data.get("label")
+
+            if label == "DETAIL":
+                # Handle detail page
+                Actor.log.info(f"Processing detail page: {context.request.url}")
+
+                # Check if page is still open
+                if context.page.is_closed():
+                    Actor.log.warning("Page is closed, skipping detail page")
+                    return
+
+                try:
+                    # Load page with 'commit' strategy for faster loading
+                    await context.page.goto(
+                        context.request.url, wait_until="commit", timeout=120000
+                    )
+                    Actor.log.info("Detail page navigation committed")
+
+                    # Wait a bit for initial content to render
+                    await context.page.wait_for_timeout(2000)
+
+                    # Extract detailed video information
+                    detailed: dict[str, Any] = {
+                        "video_url": context.request.url,
+                        "title": None,
+                        "duration": None,
+                        "likes": None,
+                        "creators": None,
+                        "summary": None,
+                        "comments_count": None,
+                    }
+
+                    # Wait for key elements to be ready
+                    page_ready = await wait_for_video_page_ready(
+                        context.page, timeout=30000
+                    )
+                    if not page_ready:
+                        Actor.log.warning(
+                            "Detail page may not be fully loaded, continuing anyway..."
+                        )
+
+                    # Additional wait for dynamic content
+                    if not context.page.is_closed():
+                        await context.page.wait_for_timeout(3000)
+
+                    # Extract video information (same logic as in default handler)
+                    # ... (可以复用现有的提取逻辑)
+
+                    # For now, just push the URL to dataset
+                    await context.push_data(
+                        {
+                            "url": context.request.url,
+                            "processed": True,
+                            "label": "DETAIL",
+                        }
+                    )
+                    Actor.log.info(f"Processed detail page: {context.request.url}")
+
+                except PlaywrightError as e:
+                    if "Target page, context or browser has been closed" in str(
+                        e
+                    ) or "Target closed" in str(e):
+                        Actor.log.warning(
+                            f"Page/context closed during detail page processing: {e}"
+                        )
+                        return
+                    Actor.log.error(f"Error processing detail page: {e}")
+                except Exception as e:
+                    Actor.log.error(f"Error processing detail page: {e}")
+
+                return  # Exit early for detail pages
+
+            # Default handler for channel/video list pages
             Actor.log.info("Scraping is started")
 
             # There is no Flask request context here; use Actor input or context.request.url
@@ -249,11 +324,6 @@ async def main() -> None:
                 except Exception as e:
                     Actor.log.warning(f"Error extracting data from element {i}: {e}")
 
-            # Visit each video page to gather detailed info (comments count, likes, etc.)
-            # Process videos sequentially (one by one)
-            # Process videos one by one (sequentially)
-            Actor.log.info(f"Processing {len(video_info_list)} videos sequentially...")
-
             # Save individual video data to separate JSON file with UTF-8 encoding
             video_filename = f"video_info_list.json"
             video_json_data = json.dumps(video_info_list, ensure_ascii=False, indent=2)
@@ -263,6 +333,33 @@ async def main() -> None:
                 content_type="application/json; charset=utf-8",
             )
             Actor.log.info(f"Saved video data to {video_filename} (UTF-8 encoding)")
+
+            # 第二步：将详情页请求加入队列（由其他Handler处理）
+            Actor.log.info(f"Enqueueing {len(video_info_list)} video detail pages...")
+            for video in video_info_list:
+                link = video.get("link")
+                if not link:
+                    continue
+
+                # Ensure full URL
+                if link.startswith("/"):
+                    link = f"https://www.youtube.com{link}"
+
+                # 将详情页请求加入队列
+                request = Request(
+                    url=link, user_data={"label": "DETAIL"}  # 标记为详情页
+                )
+                await context.crawler.request_queue.add_request(request)
+                Actor.log.debug(f"Enqueued detail page: {link}")
+
+            Actor.log.info(
+                f"Successfully enqueued {len(video_info_list)} detail page requests"
+            )
+
+            # Visit each video page to gather detailed info (comments count, likes, etc.)
+            # Process videos sequentially (one by one)
+            # Process videos one by one (sequentially)
+            Actor.log.info(f"Processing {len(video_info_list)} videos sequentially...")
 
             # Track all processed videos for final JSON save
             detailed_video_info_list = []
@@ -297,13 +394,35 @@ async def main() -> None:
                     # Navigate to video page with optimized loading
                     Actor.log.info(f"Visiting video: {link}")
 
-                    # Load page with 'commit' strategy for faster loading
-                    # 'commit' waits for navigation to commit, which is faster than 'load'
-                    await context.page.goto(link, wait_until="commit", timeout=120000)
-                    Actor.log.info("Page navigation committed")
+                    # Check if page is still open before navigation
+                    if context.page.is_closed():
+                        Actor.log.warning("Page is closed, skipping video")
+                        continue
 
-                    # Wait a bit for initial content to render
-                    await context.page.wait_for_timeout(2000)
+                    try:
+                        # Load page with 'commit' strategy for faster loading
+                        # 'commit' waits for navigation to commit, which is faster than 'load'
+                        await context.page.goto(
+                            link, wait_until="commit", timeout=120000
+                        )
+                        Actor.log.info("Page navigation committed")
+
+                        # Wait a bit for initial content to render
+                        await context.page.wait_for_timeout(2000)
+                    except PlaywrightError as e:
+                        if "Target page, context or browser has been closed" in str(
+                            e
+                        ) or "Target closed" in str(e):
+                            Actor.log.warning(
+                                f"Page/context closed during navigation: {e}"
+                            )
+                            continue
+                        raise
+
+                    # Check if page is still open before operations
+                    if context.page.is_closed():
+                        Actor.log.warning("Page is closed, skipping video extraction")
+                        continue
 
                     # Check for YouTube restrictions (age verification, region block, etc.)
                     try:
@@ -322,25 +441,57 @@ async def main() -> None:
                         ).count()
                         if unavailable > 0:
                             Actor.log.warning("Video is unavailable")
+                    except PlaywrightError as e:
+                        if "Target page, context or browser has been closed" in str(
+                            e
+                        ) or "Target closed" in str(e):
+                            Actor.log.warning(
+                                f"Page/context closed during restriction check: {e}"
+                            )
+                            continue
+                        pass
                     except Exception:
                         pass
 
                     # Wait for key elements to be ready with increased timeout
-                    page_ready = await wait_for_video_page_ready(
-                        context.page, timeout=30000  # Increased to 30 seconds
-                    )
-                    if not page_ready:
-                        Actor.log.warning(
-                            f"Video page may not be fully loaded, continuing anyway..."
+                    try:
+                        page_ready = await wait_for_video_page_ready(
+                            context.page, timeout=30000  # Increased to 30 seconds
                         )
+                        if not page_ready:
+                            Actor.log.warning(
+                                f"Video page may not be fully loaded, continuing anyway..."
+                            )
 
-                    # Additional wait for dynamic content to ensure everything is loaded
-                    await context.page.wait_for_timeout(3000)  # Increased to 3 seconds
+                        # Additional wait for dynamic content to ensure everything is loaded
+                        if not context.page.is_closed():
+                            await context.page.wait_for_timeout(
+                                3000
+                            )  # Increased to 3 seconds
+                    except PlaywrightError as e:
+                        if "Target page, context or browser has been closed" in str(
+                            e
+                        ) or "Target closed" in str(e):
+                            Actor.log.warning(f"Page/context closed during wait: {e}")
+                            continue
+                        raise
 
                     # Extract detailed video information directly
                     # Initialize video info dictionary
+                    try:
+                        video_url = context.page.url
+                    except PlaywrightError as e:
+                        if "Target page, context or browser has been closed" in str(
+                            e
+                        ) or "Target closed" in str(e):
+                            Actor.log.warning(
+                                f"Page/context closed when getting URL: {e}"
+                            )
+                            continue
+                        video_url = link
+
                     detailed: dict[str, Any] = {
-                        "video_url": context.page.url,
+                        "video_url": video_url,
                         "title": None,
                         "duration": None,
                         "likes": None,
@@ -348,6 +499,11 @@ async def main() -> None:
                         "summary": None,
                         "comments_count": None,
                     }
+
+                    # Check if page is still open before extraction
+                    if context.page.is_closed():
+                        Actor.log.warning("Page is closed, skipping video extraction")
+                        continue
 
                     try:
                         # Extract duration - try multiple selectors
@@ -364,6 +520,9 @@ async def main() -> None:
                         duration = None
                         for selector in duration_selectors:
                             try:
+                                # Check if page is still open
+                                if context.page.is_closed():
+                                    break
                                 element = context.page.locator(selector).first
                                 if await element.count() > 0:
                                     # Try to get content attribute first (for meta tags)
@@ -414,6 +573,20 @@ async def main() -> None:
                                                 f"Found duration with selector '{selector}': {detailed['duration']}"
                                             )
                                             break
+                            except PlaywrightError as e:
+                                if (
+                                    "Target page, context or browser has been closed"
+                                    in str(e)
+                                    or "Target closed" in str(e)
+                                ):
+                                    Actor.log.warning(
+                                        f"Page/context closed during duration extraction: {e}"
+                                    )
+                                    raise
+                                Actor.log.debug(
+                                    f"Error with duration selector '{selector}': {e}"
+                                )
+                                continue
                             except Exception as e:
                                 Actor.log.debug(
                                     f"Error with duration selector '{selector}': {e}"
@@ -546,6 +719,18 @@ async def main() -> None:
                             detailed["summary"] = description
                             Actor.log.info(f"Found summary: {detailed['summary']}")
 
+                    except PlaywrightError as e:
+                        if "Target page, context or browser has been closed" in str(
+                            e
+                        ) or "Target closed" in str(e):
+                            Actor.log.warning(
+                                f"Page/context closed during video info extraction: {e}"
+                            )
+                            continue
+                        Actor.log.error(
+                            f"Playwright error extracting YouTube video info: {e}"
+                        )
+                        continue
                     except Exception as e:
                         Actor.log.error(f"Error extracting YouTube video info: {e}")
                         continue
