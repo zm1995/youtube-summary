@@ -8,88 +8,17 @@ https://docs.apify.com/sdk/python
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
-
+import logging
 import os
-
+import requests
 from apify import Actor
 from crawlee import Request
 from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
 from playwright.async_api import Page, Browser, BrowserContext
-
-
-async def extract_youtube_video_urls(page: Page, max_videos: int = 30) -> list[str]:
-    """Extract YouTube video URLs from a YouTube page (homepage, search, channel, etc.).
-    
-    Args:
-        page: Playwright page object for the YouTube page
-        max_videos: Maximum number of video URLs to extract
-        
-    Returns:
-        List of YouTube video URLs
-    """
-    video_urls: list[str] = []
-    
-    try:
-        # Wait for the page to load
-        await page.wait_for_load_state('networkidle')
-        await page.wait_for_timeout(3000)  # Wait for dynamic content to load
-        
-        # Scroll down to load more videos (YouTube uses infinite scroll)
-        for _ in range(3):  # Scroll 3 times to load more content
-            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-            await page.wait_for_timeout(2000)
-        
-        # Extract video links - try multiple selectors for different YouTube layouts
-        video_selectors = [
-            'a[href*="/watch?v="]',
-            'ytd-video-renderer a[href*="/watch?v="]',
-            'ytd-rich-item-renderer a[href*="/watch?v="]',
-            'ytd-grid-video-renderer a[href*="/watch?v="]',
-            'a#video-title[href*="/watch?v="]',
-        ]
-        
-        for selector in video_selectors:
-            try:
-                links = await page.locator(selector).all()
-                for link in links:
-                    if len(video_urls) >= max_videos:
-                        break
-                    
-                    href = await link.get_attribute('href')
-                    if href:
-                        # Convert relative URLs to absolute
-                        if href.startswith('/'):
-                            video_url = f'https://www.youtube.com{href}'
-                        elif href.startswith('http'):
-                            video_url = href
-                        else:
-                            continue
-                        
-                        # Extract clean video URL (remove extra parameters if needed)
-                        if '/watch?v=' in video_url:
-                            # Keep only the video ID part
-                            match = re.search(r'/watch\?v=([^&]+)', video_url)
-                            if match:
-                                video_url = f'https://www.youtube.com/watch?v={match.group(1)}'
-                            
-                            # Avoid duplicates
-                            if video_url not in video_urls:
-                                video_urls.append(video_url)
-                
-                if len(video_urls) >= max_videos:
-                    break
-            except Exception as e:
-                Actor.log.warning(f'Error extracting videos with selector {selector}: {e}')
-                continue
-        
-        Actor.log.info(f'Extracted {len(video_urls)} video URLs from {page.url}')
-        
-    except Exception as e:
-        Actor.log.error(f'Error extracting YouTube video URLs: {e}')
-    
-    return video_urls[:max_videos]
+from bs4 import BeautifulSoup
 
 
 async def get_youtube_video_info(page: Page) -> dict[str, Any]:
@@ -271,84 +200,7 @@ async def get_youtube_video_info(page: Page) -> dict[str, Any]:
     
     return video_info
 
-
-async def login_to_youtube(page: Page, email: str, password: str) -> bool:
-    """Login to YouTube with provided credentials.
     
-    Args:
-        page: Playwright page object
-        email: YouTube account email
-        password: YouTube account password
-        
-    Returns:
-        True if login successful, False otherwise
-    """
-    try:
-        Actor.log.info('Starting YouTube login process...')
-        
-        # Navigate to YouTube
-        await page.goto('https://www.youtube.com', wait_until='networkidle')
-        await page.wait_for_timeout(2000)
-        
-        # Check if already logged in
-        sign_in_button = page.locator('text=Sign in').first
-        if await sign_in_button.count() == 0:
-            Actor.log.info('Already logged in to YouTube')
-            return True
-        
-        # Click Sign in button
-        Actor.log.info('Clicking Sign in button...')
-        await sign_in_button.click()
-        await page.wait_for_timeout(2000)
-        
-        # Wait for email input and enter email
-        Actor.log.info('Entering email...')
-        email_input = page.locator('input[type="email"]').first
-        await email_input.wait_for(state='visible', timeout=10000)
-        await email_input.fill(email)
-        await page.wait_for_timeout(1000)
-        
-        # Click Next button
-        next_button = page.locator('button:has-text("Next")').first
-        if await next_button.count() > 0:
-            await next_button.click()
-            await page.wait_for_timeout(3000)
-        
-        # Wait for password input and enter password
-        Actor.log.info('Entering password...')
-        password_input = page.locator('input[type="password"]').first
-        await password_input.wait_for(state='visible', timeout=10000)
-        await password_input.fill(password)
-        await page.wait_for_timeout(1000)
-        
-        # Click Next/Sign in button
-        sign_in_button_final = page.locator('button:has-text("Next"), button:has-text("Sign in")').first
-        if await sign_in_button_final.count() > 0:
-            await sign_in_button_final.click()
-            await page.wait_for_timeout(5000)
-        
-        # Wait for navigation to complete and check if login was successful
-        await page.wait_for_load_state('networkidle', timeout=15000)
-        await page.wait_for_timeout(3000)
-        
-        # Check if we're logged in by looking for user avatar or account button
-        user_avatar = page.locator('button#avatar-btn, ytd-topbar-menu-button-renderer').first
-        if await user_avatar.count() > 0:
-            Actor.log.info('Successfully logged in to YouTube')
-            return True
-        else:
-            # Check for error messages
-            error_message = page.locator('text=/wrong password|incorrect|error/i').first
-            if await error_message.count() > 0:
-                error_text = await error_message.text_content()
-                Actor.log.error(f'Login failed: {error_text}')
-            else:
-                Actor.log.warning('Login status unclear - may need manual verification')
-            return False
-            
-    except Exception as e:
-        Actor.log.error(f'Error during YouTube login: {e}')
-        return False
 
 
 async def main() -> None:
@@ -366,7 +218,7 @@ async def main() -> None:
             url.get('url')
             for url in actor_input.get(
                 'start_urls',
-                [{'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'}],
+                [{'url': 'https://www.youtube.com'}],
             )
         ]
 
@@ -378,96 +230,112 @@ async def main() -> None:
         # Get max videos to scrape (default 30)
         max_videos = int(actor_input.get('max_videos', 30))
         
-        # Get login credentials from environment variables (preferred) or input
-        # Environment variables are more secure, especially for secrets
-        email = os.getenv('YOUTUBE_EMAIL', '') or actor_input.get('youtube_email', '')
-        password = os.getenv('YOUTUBE_PASSWORD', '') or actor_input.get('youtube_password', '')
-        
-        if email and password:
-            Actor.log.info('YouTube credentials found (from environment variables or input)')
-        elif email or password:
-            Actor.log.warning('Incomplete credentials: email or password missing')
-        
-        # Create a crawler
+        # Create a crawler with English language preference
         crawler = PlaywrightCrawler(
-            # Allow enough requests for initial page + 30 videos
+            # Allow enough requests for initial page + videos
             max_requests_per_crawl=max_videos + 1,
             headless=True,
             browser_launch_options={
-                'args': ['--disable-gpu', '--no-sandbox'],
+                'args': ['--disable-gpu', '--no-sandbox', '--lang=en-US'],
             },
         )
         
         # Define a request handler, which will be called for every request.
         @crawler.router.default_handler
         async def request_handler(context: PlaywrightCrawlingContext) -> None:
-            url = context.request.url
-            Actor.log.info(f'Scraping {url}...')
+            Actor.log.info("Scraping is started")
             
-            # Check if we need to login (only once, on first YouTube page)
-            login_performed = await Actor.get_value('login_performed') or False
-            if email and password and not login_performed and 'youtube.com' in url:
-                Actor.log.info('Performing login on first YouTube page...')
-                login_success = await login_to_youtube(context.page, email, password)
-                if login_success:
-                    await Actor.set_value('login_performed', True)
-                    Actor.log.info('Login successful')
-                else:
-                    Actor.log.warning('Login may have failed, continuing anyway...')
+            # There is no Flask request context here; use Actor input or context.request.url
+            # This is just a structural fix. Adapt as needed for actual Actor input source.
+            actor_input = await Actor.get_input() or {}
+            channel_name = actor_input.get("channel", "").replace(" ", "").replace("@", "")
+            if not channel_name:
+                Actor.log.warning("No channel name provided, using default")
+                channel_name = "unknown"
+            # Force English page with language parameters
+            url = f"https://www.youtube.com/@{channel_name}/videos"
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/58.0.3029.110 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            }
             
-            # Get current scraped count (ensure it's an integer)
-            scraped_videos_count = await Actor.get_value('scraped_videos_count')
-            if scraped_videos_count is None:
-                scraped_videos_count = 0
-            else:
-                scraped_videos_count = int(scraped_videos_count)
+            Actor.log.info(f"Navigating to {url} using Playwright...")
+            
+            # Navigate to the URL using Playwright page (can execute JavaScript)
+            await context.page.goto(url, wait_until='networkidle', timeout=60000)
+            
+            # Wait for page to fully load and JavaScript to render content
+            Actor.log.info("Waiting for page content to load...")
+            await context.page.wait_for_timeout(5000)  # Wait for JavaScript to render
+            
+            # Try to wait for ytd-two-column-browse-results-renderer to appear
+            try:
+                await context.page.wait_for_selector('ytd-two-column-browse-results-renderer', timeout=10000)
+                Actor.log.info("ytd-two-column-browse-results-renderer selector found")
+            except Exception as e:
+                Actor.log.warning(f"ytd-two-column-browse-results-renderer not found: {e}")
+            
+            # Use Playwright to find elements directly
+            Actor.log.info("Finding video elements using Playwright...")
+            
+            # Find ytd-two-column-browse-results-renderer > div#primary > ytd-rich-grid-renderer > div#contents > ytd-rich-item-renderer
+            try:
+                # Get all ytd-rich-item-renderer elements using the full path
+                vid_elements_locator = context.page.locator(
+                    'ytd-two-column-browse-results-renderer div#primary ytd-rich-grid-renderer div#contents ytd-rich-item-renderer'
+                )
+                vid_elements_count = await vid_elements_locator.count()
+                Actor.log.info(f"Found {vid_elements_count} ytd-rich-item-renderer elements")
+            except Exception as e:
+                Actor.log.error(f"Error finding video elements: {e}")
+                vid_elements_count = 0
+                vid_elements_locator = None
+         
 
-            # Check if this is a YouTube video URL
-            if 'youtube.com/watch' in url or 'youtu.be/' in url:
-                # Check if we've already scraped enough videos
-                if scraped_videos_count >= max_videos:
-                    Actor.log.info(f'Reached max videos limit ({max_videos}), skipping {url}')
-                    return
+            video_info: dict[str, Any] = {
+                'video_url': None,
+                'title': None,
+                'thumbnail': None,
+                'link': None,
+                'viscount': None,
+                'age': None,
+            }
+            video_info_list = []
+            for i in range(min(vid_elements_count, max_videos)):
+                try:
+                    element = vid_elements_locator.nth(i)
+                    video_info['video_url'] = context.page.url
+                    
+                    video_info['title'] = await element.locator('a#video-title-link').first.get_attribute('aria-label') or await element.locator('a#video-title-link').first.text_content()
+                   
+                    video_info['thumbnail'] = await element.locator('img').first.get_attribute('src')
+                     
+                    video_info['link'] = await element.locator('a#video-title-link').first.get_attribute('href')
+                    
+                    video_info['viscount'] = await element.locator('span:has-text("views")').first.text_content()
+                    
+                    video_info['age'] = await element.locator('span:has-text("ago")').first.text_content()
+                    video_info_list.append(video_info)
                 
-                # Extract YouTube video information
-                data = await get_youtube_video_info(context.page)
+                except Exception as e:
+                    Actor.log.warning(f"Error extracting data from element {i}: {e}")
                 
-                # Store the extracted data to the default dataset.
-                await context.push_data(data)
-                
-                # Update scraped count
-                scraped_videos_count += 1
-                await Actor.set_value('scraped_videos_count', scraped_videos_count)
-                Actor.log.info(f'Scraped {scraped_videos_count}/{max_videos} videos')
-                
-            elif 'youtube.com' in url:
-                # This is a YouTube page (homepage, search, channel, etc.)
-                # Extract video URLs from this page
-                video_urls = await extract_youtube_video_urls(context.page, max_videos)
-                
-                # Enqueue only video URLs, not all links
-                requests_to_enqueue = []
-                for video_url in video_urls:
-                    if scraped_videos_count >= max_videos:
-                        break
-                    requests_to_enqueue.append(Request(video_url))
-                
-                if requests_to_enqueue:
-                    await context.add_requests(requests_to_enqueue)
-            else:
-                # For non-YouTube pages, just extract basic data
-                data = {
-                    'url': context.request.url,
-                    'title': await context.page.title(),
-                    'h1s': [await h1.text_content() for h1 in await context.page.locator('h1').all()],
-                    'h2s': [await h2.text_content() for h2 in await context.page.locator('h2').all()],
-                    'h3s': [await h3.text_content() for h3 in await context.page.locator('h3').all()],
-                }
-                await context.push_data(data)
+            # Save video_info_list to JSON file in key-value store
+            Actor.log.info(f"Saving {len(video_info_list)} video information to JSON file...")
+            json_data = json.dumps(video_info_list, ensure_ascii=False, indent=2)
+            await Actor.set_value('video_information.json', json_data, content_type='application/json')
+            Actor.log.info("Video information saved to key-value store as 'video_information.json'")    
+                        
+            # Push data to dataset
+            await context.push_data(video_info_list)
 
-        # Reset scraped count and login flag at start
+        # Reset scraped count at start
         await Actor.set_value('scraped_videos_count', 0)
-        await Actor.set_value('login_performed', False)
         
         # Run the crawler with the starting requests.
         await crawler.run(start_urls)

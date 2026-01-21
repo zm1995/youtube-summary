@@ -3,6 +3,7 @@
 
 apify < 4.0.0
 crawlee[playwright]
+beautifulsoup4
 langchain-openai < 1.0.0
 langgraph < 1.0.0
 pydantic > 2.7.0

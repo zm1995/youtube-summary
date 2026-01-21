@@ -19,6 +19,13 @@
             "minimum": 1,
             "maximum": 1000
         },
+        "channel": {
+            "title": "YouTube Channel",
+            "type": "string",
+            "description": "YouTube channel name (without @ symbol, e.g., 'channelname' for @channelname)",
+            "default": "@马克的技术工作坊",
+            "editor": "textfield"
+        },
         "youtube_email": {
             "title": "YouTube Email",
             "type": "string",
