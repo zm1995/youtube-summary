@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import asyncio
 from typing import Any
 import logging
 import os
@@ -355,39 +356,72 @@ async def main() -> None:
                     Actor.log.warning(f"Error extracting data from element {i}: {e}")
 
             # Visit each video page to gather detailed info (comments count, likes, etc.)
-            detailed_video_info_list = []
-            for idx, video in enumerate(video_info_list):
+            # Use asyncio.wait to process videos concurrently
+            async def process_video(video: dict[str, Any], browser_context: BrowserContext) -> dict[str, Any]:
+                """Process a single video page to get detailed information."""
                 link = video.get('link')
                 if not link:
-                    detailed_video_info_list.append(video)
-                    continue
+                    return video
+                
                 try:
                     # Ensure full URL
                     if link.startswith('/'):
                         link = f"https://www.youtube.com{link}"
                         video['link'] = link
-                    Actor.log.info(f"Visiting video {idx+1}/{len(video_info_list)}: {link}")
-                    await context.page.goto(link, wait_until='networkidle', timeout=60000)
-                    await context.page.wait_for_timeout(2000)
                     
-                    detailed = await get_youtube_video_info(context.page)
-                    
-                    # Merge detailed fields
-                    video['video_url'] = detailed.get('video_url', link)
-                    video['duration'] = detailed.get('duration')
-                    video['likes'] = detailed.get('likes')
-                    video['creators'] = detailed.get('creators')
-                    video['summary'] = detailed.get('summary')
-                    video['comments_count'] = detailed.get('comments_count')
-                    
-                    # Prefer detailed title if available
-                    if detailed.get('title'):
-                        video['title'] = detailed['title']
-                    
-                    detailed_video_info_list.append(video)
+                    # Create a new page for concurrent processing
+                    new_page = await browser_context.new_page()
+                    try:
+                        Actor.log.info(f"Visiting video: {link}")
+                        await new_page.goto(link, wait_until='networkidle', timeout=60000)
+                        await new_page.wait_for_timeout(2000)
+                        
+                        detailed = await get_youtube_video_info(new_page)
+                        
+                        # Merge detailed fields
+                        video['video_url'] = detailed.get('video_url', link)
+                        video['duration'] = detailed.get('duration')
+                        video['likes'] = detailed.get('likes')
+                        video['creators'] = detailed.get('creators')
+                        video['summary'] = detailed.get('summary')
+                        video['comments_count'] = detailed.get('comments_count')
+                        
+                        # Prefer detailed title if available
+                        if detailed.get('title'):
+                            video['title'] = detailed['title']
+                        
+                        return video
+                    finally:
+                        await new_page.close()
                 except Exception as e:
                     Actor.log.warning(f"Error visiting video {link}: {e}")
-                    detailed_video_info_list.append(video)
+                    return video
+            
+            # Create tasks for all videos (must use create_task, not coroutines directly)
+            browser_context = context.page.context
+            tasks = [
+                asyncio.create_task(process_video(video, browser_context))
+                for video in video_info_list
+            ]
+            
+            # Use asyncio.wait to process videos concurrently
+            Actor.log.info(f"Processing {len(tasks)} videos concurrently...")
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
+            
+            # Collect results
+            detailed_video_info_list = []
+            for task in done:
+                try:
+                    result = await task
+                    detailed_video_info_list.append(result)
+                except Exception as e:
+                    Actor.log.warning(f"Error getting result from task: {e}")
+            
+            # Handle any pending tasks (shouldn't happen with ALL_COMPLETED, but just in case)
+            if pending:
+                Actor.log.warning(f"Found {len(pending)} pending tasks")
+                for task in pending:
+                    task.cancel()
                 
             # Save video_info_list to JSON file in key-value store
             Actor.log.info(f"Saving {len(detailed_video_info_list)} video information to JSON file...")
