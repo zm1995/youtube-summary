@@ -1,0 +1,4 @@
+[tool.black]
+line-length = 88
+target-version = ['py311']
+# Black uses 4-space indentation by default (PEP 8 standard)
