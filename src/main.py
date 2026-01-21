@@ -41,11 +41,13 @@ async def get_youtube_video_info(page: Page) -> dict[str, Any]:
         'likes': None,
         'creators': None,
         'summary': None,
+        'comments_count': None,
     }
     
     try:
         # Extract title - try multiple selectors
         title_selectors = [
+            '#title h1.style-scope.ytd-watch-metadata yt-formatted-string',
             'h1.ytd-watch-metadata yt-formatted-string',
             'h1.ytd-watch-metadata',
             'h1[class*="watch"]',
@@ -54,25 +56,14 @@ async def get_youtube_video_info(page: Page) -> dict[str, Any]:
         ]
         
         for selector in title_selectors:
-            try:
-                if selector.startswith('meta'):
-                    title = await page.get_attribute(selector, 'content')
-                else:
-                    element = page.locator(selector).first
-                    if await element.count() > 0:
-                        title = await element.text_content()
-                    else:
-                        continue
-                
+            element = page.locator(selector).first
+            if await element.count() > 0:
+                title = await element.text_content()
                 if title:
                     video_info['title'] = title.strip()
                     break
-            except Exception:
-                continue
-        
-        # Fallback to page title if no title found
-        if not video_info['title']:
-            video_info['title'] = (await page.title()).replace(' - YouTube', '').strip()
+                
+      
         
         # Extract duration - try multiple selectors
         duration_selectors = [
@@ -102,8 +93,9 @@ async def get_youtube_video_info(page: Page) -> dict[str, Any]:
             except Exception:
                 continue
         
-        # Extract likes - try multiple selectors
+        # Extract likes - use the specific selector from YouTube
         likes_selectors = [
+            'segmented-like-dislike-button-view-model button .yt-spec-button-shape-next__button-text-content',
             'button[aria-label*="like"] span',
             'yt-formatted-string[id="text"]:has-text("likes")',
             '[aria-label*="like"]',
@@ -115,20 +107,64 @@ async def get_youtube_video_info(page: Page) -> dict[str, Any]:
                 # Try to find like button and extract the count
                 like_button = page.locator(selector).first
                 if await like_button.count() > 0:
-                    # Try to get aria-label or text content
+                    # Get text content from the element
+                    text = await like_button.text_content()
+                    if text:
+                        text = text.strip()
+                        # Extract number from text (e.g., "1.2K", "123", "1.5M")
+                        match = re.search(r'([\d,\.]+[KMB]?)', text, re.IGNORECASE)
+                        if match:
+                            video_info['likes'] = match.group(1)
+                            Actor.log.info(f"Found likes: {video_info['likes']}")
+                            break
+                        # If no match but text exists, use it directly
+                        elif text:
+                            video_info['likes'] = text
+                            Actor.log.info(f"Found likes (direct): {video_info['likes']}")
+                            break
+                    
+                    # Try to get aria-label as fallback
                     aria_label = await like_button.get_attribute('aria-label')
                     if aria_label:
                         # Extract number from aria-label like "1.2K likes" or "123 likes"
                         match = re.search(r'([\d,\.]+[KMB]?)\s*likes?', aria_label, re.IGNORECASE)
                         if match:
                             video_info['likes'] = match.group(1)
+                            Actor.log.info(f"Found likes from aria-label: {video_info['likes']}")
                             break
-                    
-                    # Try text content as fallback
-                    text = await like_button.text_content()
-                    if text and ('like' in text.lower() or text.strip().replace(',', '').replace('.', '').isdigit()):
-                        video_info['likes'] = text.strip()
-                        break
+            except Exception as e:
+                Actor.log.debug(f"Error with selector {selector}: {e}")
+                continue
+
+        # Extract comments count - try multiple selectors
+        comments_selectors = [
+            'ytd-comments-header-renderer #count',
+            'ytd-comments-header-renderer .count-text',
+            'ytd-comments-header-renderer #title #count',
+            'yt-formatted-string.count-text',
+        ]
+        try:
+            # Attempt to scroll to comments to ensure lazy-loaded content appears
+            await page.evaluate("window.scrollBy(0, document.body.scrollHeight / 2);")
+            await page.wait_for_timeout(1000)
+        except Exception:
+            pass
+
+        for selector in comments_selectors:
+            try:
+                element = page.locator(selector).first
+                if await element.count() > 0:
+                    comments_text = await element.text_content()
+                    if comments_text:
+                        match = re.search(r'([\d,.,]+)\s+comments?', comments_text, re.IGNORECASE)
+                        if match:
+                            video_info['comments_count'] = match.group(1)
+                            break
+                        # Fallback: if text is just number
+                        numeric = re.search(r'[\d,.,]+', comments_text)
+                        if numeric:
+                            video_info['comments_count'] = numeric.group(0)
+                            break
             except Exception:
                 continue
         
@@ -297,22 +333,15 @@ async def main() -> None:
                 vid_elements_locator = None
          
 
-            video_info: dict[str, Any] = {
-                'video_url': None,
-                'title': None,
-                'thumbnail': None,
-                'link': None,
-                'viscount': None,
-                'age': None,
-            }
             video_info_list = []
             for i in range(min(vid_elements_count, max_videos)):
                 try:
+                    video_info = {}
                     element = vid_elements_locator.nth(i)
                     video_info['video_url'] = context.page.url
                     
                     video_info['title'] = await element.locator('a#video-title-link').first.get_attribute('aria-label') or await element.locator('a#video-title-link').first.text_content()
-                   
+                    
                     video_info['thumbnail'] = await element.locator('img').first.get_attribute('src')
                      
                     video_info['link'] = await element.locator('a#video-title-link').first.get_attribute('href')
@@ -324,15 +353,50 @@ async def main() -> None:
                 
                 except Exception as e:
                     Actor.log.warning(f"Error extracting data from element {i}: {e}")
+
+            # Visit each video page to gather detailed info (comments count, likes, etc.)
+            detailed_video_info_list = []
+            for idx, video in enumerate(video_info_list):
+                link = video.get('link')
+                if not link:
+                    detailed_video_info_list.append(video)
+                    continue
+                try:
+                    # Ensure full URL
+                    if link.startswith('/'):
+                        link = f"https://www.youtube.com{link}"
+                        video['link'] = link
+                    Actor.log.info(f"Visiting video {idx+1}/{len(video_info_list)}: {link}")
+                    await context.page.goto(link, wait_until='networkidle', timeout=60000)
+                    await context.page.wait_for_timeout(2000)
+                    
+                    detailed = await get_youtube_video_info(context.page)
+                    
+                    # Merge detailed fields
+                    video['video_url'] = detailed.get('video_url', link)
+                    video['duration'] = detailed.get('duration')
+                    video['likes'] = detailed.get('likes')
+                    video['creators'] = detailed.get('creators')
+                    video['summary'] = detailed.get('summary')
+                    video['comments_count'] = detailed.get('comments_count')
+                    
+                    # Prefer detailed title if available
+                    if detailed.get('title'):
+                        video['title'] = detailed['title']
+                    
+                    detailed_video_info_list.append(video)
+                except Exception as e:
+                    Actor.log.warning(f"Error visiting video {link}: {e}")
+                    detailed_video_info_list.append(video)
                 
             # Save video_info_list to JSON file in key-value store
-            Actor.log.info(f"Saving {len(video_info_list)} video information to JSON file...")
-            json_data = json.dumps(video_info_list, ensure_ascii=False, indent=2)
+            Actor.log.info(f"Saving {len(detailed_video_info_list)} video information to JSON file...")
+            json_data = json.dumps(detailed_video_info_list, ensure_ascii=False, indent=2)
             await Actor.set_value('video_information.json', json_data, content_type='application/json')
             Actor.log.info("Video information saved to key-value store as 'video_information.json'")    
                         
             # Push data to dataset
-            await context.push_data(video_info_list)
+            await context.push_data(detailed_video_info_list)
 
         # Reset scraped count at start
         await Actor.set_value('scraped_videos_count', 0)
